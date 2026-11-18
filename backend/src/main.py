@@ -13,6 +13,8 @@ from .services import get,pack,pack_layout,pack_sweep,audit,invalidate,assign,ch
 from .middlewares import RequestTrace,BurstGuard
 from .readiness_routes import router as readiness_router
 from .testcycle_routes import router as testcycle_router
+from .blind_routes import router as blind_router
+from .blind_service import sealed_sweep_ids
 from .constants import ROLES,ZONES,LAYOUT_STATES
 r=redis.Redis.from_url(os.environ['REDIS_URL'],decode_responses=True)
 @asynccontextmanager
@@ -24,7 +26,7 @@ async def lifespan(app):
             seed()
         except Exception:logging.exception('seed failed')
     yield
-app=FastAPI(title='翼衡 · 风洞测点精简审签',lifespan=lifespan);app.include_router(readiness_router);app.include_router(testcycle_router);app.add_middleware(RequestTrace);app.add_middleware(BurstGuard)
+app=FastAPI(title='翼衡 · 风洞测点精简审签',lifespan=lifespan);app.include_router(readiness_router);app.include_router(testcycle_router);app.include_router(blind_router);app.add_middleware(RequestTrace);app.add_middleware(BurstGuard)
 @app.exception_handler(IntegrityError)
 async def conflict(req,exc):return JSONResponse({'detail':'编号重复、测点重复或关联条件不满足，请核对'},409)
 @app.get('/health')
@@ -46,7 +48,9 @@ def probe(pid:int,p:ProbeInput,s=Depends(db_session),u=Depends(writers)):
     for k,value in p.model_dump().items():setattr(v,k,value)
     audit(s,u,'修订标定 '+v.code);s.commit();return pack(v)
 @app.get('/sweeps')
-def sweeps(s=Depends(db_session),u=Depends(current)):return [pack_sweep(s,x)for x in s.scalars(select(Sweep).order_by(Sweep.id))]
+def sweeps(s=Depends(db_session),u=Depends(current)):
+    masked=sealed_sweep_ids(s)
+    return [pack_sweep(s,x,masked) for x in s.scalars(select(Sweep).order_by(Sweep.id))]
 def write_sweep(s,p,v=None):
     probes=s.scalars(select(Probe).order_by(Probe.id)).all()
     if set(p.pressures)!={x.code for x in probes}:raise HTTPException(409,'压力记录须覆盖全部已登记测点代码')
@@ -63,6 +67,7 @@ def add_sweep(p:SweepInput,s=Depends(db_session),u=Depends(writers)):
     v=write_sweep(s,p);audit(s,u,'录入扫角 '+v.code);s.commit();return pack_sweep(s,v)
 @app.put('/sweeps/{sid}')
 def edit_sweep(sid:int,p:SweepInput,s=Depends(db_session),u=Depends(writers)):
+    if sid in sealed_sweep_ids(s):raise HTTPException(409,'封存扫角在送验前不可修订')
     v=write_sweep(s,p,get(s,Sweep,sid));audit(s,u,'修订扫角 '+v.code);s.commit();return pack_sweep(s,v)
 @app.get('/layouts')
 def layouts(s=Depends(db_session),u=Depends(current)):return [pack_layout(s,x)for x in s.scalars(select(Layout).order_by(Layout.id.desc()))]

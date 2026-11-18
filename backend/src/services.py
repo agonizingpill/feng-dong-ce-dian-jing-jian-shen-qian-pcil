@@ -3,6 +3,7 @@ import hashlib,json
 from fastapi import HTTPException
 from sqlalchemy import select,delete
 from .models import Probe,Sweep,Pressure,Layout,LayoutProbe,Audit
+from .blind_models import BlindVerification
 
 def get(s,cls,id):
     v=s.get(cls,id)
@@ -10,9 +11,15 @@ def get(s,cls,id):
     return v
 def pack(v):return {c.name:getattr(v,c.name) for c in v.__table__.columns}
 def selected(s,lid):return list(s.scalars(select(LayoutProbe.probe_id).where(LayoutProbe.layout_id==lid).order_by(LayoutProbe.probe_id)))
-def pack_layout(s,l):return pack(l)|{'probe_ids':selected(s,l.id)}
-def pack_sweep(s,x):
-    return pack(x)|{'pressures':{probe.code:pressure.pascal for pressure,probe in s.execute(select(Pressure,Probe).join(Probe,Probe.id==Pressure.probe_id).where(Pressure.sweep_id==x.id))}}
+def pack_layout(s,l):
+    d=pack(l)|{'probe_ids':selected(s,l.id)}
+    v=s.scalar(select(BlindVerification).where(BlindVerification.layout_id==l.id).order_by(BlindVerification.id.desc()))
+    d['blind']=None if not v else {'verdict':v.verdict,'mae':v.mae,'mae_limit':v.mae_limit,'batch_id':v.batch_id,'matches':sorted(v.probe_ids)==sorted(d['probe_ids']) and v.source_checksum==(l.source_checksum or '')}
+    return d
+def pack_sweep(s,x,masked=None):
+    d=pack(x)|{'pressures':{probe.code:pressure.pascal for pressure,probe in s.execute(select(Pressure,Probe).join(Probe,Probe.id==Pressure.probe_id).where(Pressure.sweep_id==x.id))}}
+    if masked and x.id in masked:d['lift']=None;d['sealed']=True
+    return d
 def audit(s,u,action):s.add(Audit(actor=u.email,action=action,stamp=datetime.now(timezone.utc).isoformat()))
 def invalidate(s):
     if s.scalar(select(Layout.id).where(Layout.status=='signed')):raise HTTPException(409,'已有审签布置，标定与扫角来源已冻结')
@@ -37,4 +44,11 @@ def check_sign(s,l):
     if not probes or len(probes)>l.max_channels:raise HTTPException(409,'测点数超过通道预算或尚未选点')
     if any(not p.calibrated or not p.enabled for p in probes):raise HTTPException(409,'包含未标定或已停用测点，不能审签')
     if set(p.zone for p in probes)!={'root','mid','tip'}:raise HTTPException(409,'布置须同时覆盖翼根、翼中、翼尖')
-    if l.source_checksum!=source_checksum(s):raise HTTPException(409,'来源校验已变化，请重新计算')
+    checksum=source_checksum(s)
+    if l.source_checksum!=checksum:raise HTTPException(409,'来源校验已变化，请重新计算')
+    # The latest submission decides the qualification: a pass can be voided by a
+    # fresher failure of the same configuration, and by any selection/source drift.
+    v=s.scalar(select(BlindVerification).where(BlindVerification.layout_id==l.id).order_by(BlindVerification.id.desc()))
+    if not v:raise HTTPException(409,'缺少独立盲验：须由负责人封存扫角批，本方案送验合格后才可审签')
+    if sorted(v.probe_ids)!=sorted(ids) or v.source_checksum!=checksum:raise HTTPException(409,'选点或来源已变化，盲验资格失效，请换新封存批重新送验')
+    if v.verdict!='passed':raise HTTPException(409,'最近一次送验按封存上限判定不合格，请换新封存批重新送验')

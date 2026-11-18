@@ -8,6 +8,7 @@ from datetime import datetime,timedelta,timezone
 from src.mount_models import ModelMount,RunMount
 from src.acquisition_models import AcquisitionBatch,ChannelReading
 from src.delivery_models import TunnelDelivery
+from src.blind_models import BlindBatch,BlindBatchSweep,BlindVerification
 from src.auth import hash_password
 
 def seed():
@@ -37,5 +38,5 @@ def seed():
                 now=datetime.now(timezone.utc)
                 expiry=now.date()+timedelta(days=-1 if probe_code=='P09' else 365)
                 s.add(CalibrationCertificate(probe_id=probe.id,code=cert_code,zero_error=.05,span_error=.2,valid_until=expiry,state='issued',issued_by='seed:lab-archive',issued_at=(now-timedelta(days=30)).isoformat()))
-        s.commit();print({t.__tablename__:s.scalar(select(func.count()).select_from(t))for t in (User,Probe,Sweep,Pressure,Layout,CalibrationCertificate,TunnelRun,ModelMount,RunMount,AcquisitionBatch,ChannelReading,TunnelDelivery)})
+        s.commit();print({t.__tablename__:s.scalar(select(func.count()).select_from(t))for t in (User,Probe,Sweep,Pressure,Layout,CalibrationCertificate,TunnelRun,ModelMount,RunMount,AcquisitionBatch,ChannelReading,TunnelDelivery,BlindBatch,BlindBatchSweep,BlindVerification)})
 if __name__=='__main__':seed()

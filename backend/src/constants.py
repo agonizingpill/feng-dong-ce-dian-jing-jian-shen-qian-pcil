@@ -8,3 +8,6 @@ RUN_STATES=('planned','running','completed')
 MOUNT_STATES=('draft','accepted')
 BATCH_STATES=('collecting','frozen')
 DELIVERY_STATES=('submitted','approved','acknowledged')
+
+BLIND_BATCH_STATES=('sealed','consumed')
+VERDICTS=('passed','failed')
